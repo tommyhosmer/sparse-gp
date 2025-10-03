@@ -1,56 +1,58 @@
 #include <stdlib.h>
+#include <utility>
 #include <vector>
 #include <cmath>
 #include <fstream>
 #include <iostream>
 #include "/usr/local/Cellar/eigen/3.4.0_1/include/eigen3/Eigen/Dense"
 #include "/usr/local/Cellar/eigen/3.4.0_1/include/eigen3/unsupported/Eigen/MatrixFunctions"
+#include <cassert>
+
+
 using namespace Eigen;
 
 
-class SparseGP {
+class SparseGP1D {
 public:
-    SparseGP() {}
-    ~SparseGP() {}
-    
-    double func(double x){
-        // latent function
-        return sin(3*x*M_PI) + 0.3 * cos(x*9*M_PI) + 0.5 * sin(x*7*M_PI);
+    SparseGP1D() {}
+    ~SparseGP1D() {}
+
+    VectorXd func(const VectorXd& x) {
+        // Latent function 
+        return 1.0 * (3 * x.array() * M_PI).sin() + 
+               0.3 * (x.array() * 9 * M_PI).cos() + 
+               0.5 * (x.array() * 7 * M_PI).sin();
     }
 
-    std::vector< std::vector<double> > generate_data(int n, int m, float sigma_y) {
+    std::vector<MatrixXd> generate_data(int n, int m, float sigma_y) {
         // Generate training data
-        std::vector< std::vector<double> > ans;
-        // Noisy training data
-        std::vector<double> X_train(n);
-        std::vector<double> Y_train(n);
-        // Test data
-        std::vector<double> X_test(1000);
-        std::vector<double> f_true(X_test.size());
-        // Inducing points
-        std::vector<double> X_m(m);
+        std::vector<MatrixXd> ans;
 
+        // Generate training data
+        VectorXd X_train_vec = VectorXd::LinSpaced(n, -1, 1);
+        VectorXd Y_train_vec = func(X_train_vec) + sigma_y * (VectorXd::Random(n) * 0.5);
+        // test data
+        VectorXd X_test_vec = VectorXd::LinSpaced(1000, -1.5, 1.5);
+        VectorXd f_true_vec = func(X_test_vec);
+        // inducing points
+        VectorXd X_m_vec = VectorXd::LinSpaced(m, -0.4, 0.4);
 
-        for (int i = 0; i < n; ++i) {
-            X_train[i] = -1 + 2. * i / (n - 1); // Equivalent to np.linspace(-1, 1, n)
-            Y_train[i] = func(X_train[i]) + sigma_y * ((double)rand() / RAND_MAX - 0.5);
-        }
+        // Convert to single column matrices using Map (no copy)
+        MatrixXd X_train = Map<MatrixXd>(X_train_vec.data(), n, 1);
+        MatrixXd Y_train = Map<MatrixXd>(Y_train_vec.data(), n, 1);
+        MatrixXd X_test = Map<MatrixXd>(X_test_vec.data(), 1000, 1);
+        MatrixXd f_true = Map<MatrixXd>(f_true_vec.data(), 1000, 1);
+        MatrixXd X_m = Map<MatrixXd>(X_m_vec.data(), m, 1);
 
-        for (int i = 0; i < X_test.size(); ++i){
-            X_test[i] = -1.5 + 3. * i /(X_test.size()-1);
-            f_true[i] = func(X_test[i]);
-        }
-
-        for (int i = 0; i< m; ++i){
-            X_m[i] = -0.4 + 0.8 * i / (m-1);
-        }
         ans.push_back(X_train);
         ans.push_back(Y_train);
         ans.push_back(X_test);
         ans.push_back(f_true);
         ans.push_back(X_m);
+
         return ans;
     }
+
 
     MatrixXd isotropic_rbf(const MatrixXd& X1, const MatrixXd&  X2, const VectorXd& theta){
         /*
@@ -82,16 +84,18 @@ public:
     }
 
     // verify accuracy
-    MatrixXd softplus(const MatrixXd& X){
-       return (MatrixXd::Identity(X.rows(), X.cols()) + X.exp()).log();
+    // .array() converts a vector object to an array expression for element wise operations
+    VectorXd softplus(const VectorXd& x) {
+        return (1 + x.array().exp()).log();
     }
     
-    MatrixXd softplus_inv(const MatrixXd& X){
-       return (X.exp() - MatrixXd::Identity(X.rows(), X.cols())).log();
+    VectorXd softplus_inv(const VectorXd& x) {
+        return (x.array().exp() - 1.0).log();
     }
-    
+
     VectorXd pack_params(const VectorXd& theta, const MatrixXd& X_m) {
         VectorXd theta_transformed = softplus_inv(theta);
+        // create a Map object that interprets the raw memory of X_m as a 1D vector of doubles with as many elements; const ensures the map data isn't modified
         VectorXd X_m_flat = Map<const VectorXd>(X_m.data(), X_m.size());
         
         VectorXd packed(theta_transformed.size() + X_m_flat.size());
@@ -100,23 +104,80 @@ public:
         return packed;
     }
     
+    std::pair<VectorXd, MatrixXd> unpack_params(const VectorXd& params) {
+        // Extract first 2 elements and apply softplus
+        VectorXd theta = softplus(params.head(2));
+        
+        // Extract remaining elements and reshape to (-1, 1) matrix
+        VectorXd remaining = params.tail(params.size() - 2);
+        MatrixXd X_m = Map<MatrixXd>(remaining.data(), remaining.size(), 1);
+        
+        return std::make_pair(theta, X_m);
+    }
+
+    double nlb_fn(MatrixXd& X, VectorXd& y, float sigma_y){
+        int n = X.size();
+        return 0.0;
+    }
+    
+
     void minimize(){
         // implement LBGFS
         return;
     }
 
+private:
+    double nlb(const VectorXd& packed, const MatrixXd& X) {
+        /*
+        Negative lower bound on log marginal likelihood
+        packed: kernel parameters theta and inducing inputs X_m
+        */
+        int n = X.size();
+        // unpack the params
+        std::pair<VectorXd, MatrixXd> params;
+        params = unpack_params(packed);
+        VectorXd theta = params.first;
+        MatrixXd X_m = params.second;
+
+        // compute covariance kernels
+        MatrixXd K_mm = isotropic_rbf(X_m, X_m, theta);
+        MatrixXd K_mn = isotropic_rbf(X_m, X, theta);
+
+        // L - lower triangular factor from cholesky decomposition of K_mm
+        // LLT<MatrixXd> llt(K_mm);
+        // MatrixXd L = llt.matrixL();
+        // assert(L.rows() == X_m.rows() && L.cols() == X_m.cols() && "L and X must be same shape");
+        // MatrixXd A = L.triangularView<Lower>().solve(K_mn) / sigma_y;  // m x n
+        // Cholesky decomposition
+        LLT<MatrixXd> chol(K_mm);
+        if (chol.info() != Success) {
+            return std::numeric_limits<double>::infinity();
+        }
+        
+        // Use the solver directly instead of triangularView
+        MatrixXd A = chol.solve(K_mn) / sigma_y;  // m x n
+        //Left off here, need unit tests
+        return 0.;
+    }
+
+    // write a unit test
+
 };
+
 
 class Tools {
 public: 
     Tools() {}
     ~Tools() {}
 
-    void writeToCSV(const std::vector<double>& X, const std::vector<double>& Y, const std::string& filename) {
+    void writeToCSV(const MatrixXd& X, const MatrixXd& Y, const std::string& filename) {
+        assert(X.rows() == Y.rows() && X.cols() == Y.cols() && "X and Y must be same shape");
         std::ofstream file(filename);
         file << "X,Y\n";
-        for (size_t i = 0; i < X.size(); ++i) {
-            file << X[i] << "," << Y[i] << "\n";
+        for (size_t i = 0; i < X.rows(); ++i) {
+            for (size_t j = 0; j < X.cols(); ++j){
+                file << X(i, j) << "," << Y(i, j) << "\n";
+            }
         }
         file.close();
         std::cout << "Data written to " << filename << std::endl;
@@ -132,11 +193,11 @@ int main(){
     int m = 30; 
     // Noise
     float sigma_y = 0.2;
-    SparseGP gp;
-    std::vector< std::vector<double> > ans = gp.generate_data(n, m, sigma_y);
+    SparseGP1D gp;
+    std::vector< MatrixXd > ans = gp.generate_data(n, m, sigma_y);
 
     Tools tool;
-
+    // Visualize training data against the true function
     tool.writeToCSV(ans[0], ans[1], "trainingdata.csv");
     tool.writeToCSV(ans[2], ans[3], "latentfunction.csv");
     return 0;
