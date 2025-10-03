@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include "/usr/local/Cellar/eigen/3.4.0_1/include/eigen3/Eigen/Dense"
+#include "/usr/local/Cellar/eigen/3.4.0_1/include/eigen3/unsupported/Eigen/MatrixFunctions"
 using namespace Eigen;
 
 
@@ -51,15 +52,54 @@ public:
         return ans;
     }
 
-    double isotropic_rbf(std::vector< std::vector<double> > X1, std::vector<std::vector<double> >  X2, std::vector<std::vector<double> >   theta){
+    MatrixXd isotropic_rbf(const MatrixXd& X1, const MatrixXd&  X2, const VectorXd& theta){
         /*
-        X1: array of m points (m,d)
-        X2: array of n points (n,d)
-        
+        X1: matrix of m points (d, m)
+        X2: matrix of n points (d, n)
+        theta: kernel parameters: length scale and variance amplitude
+        return: covariance matrix (m, n)
         */
+        VectorXd X1_sqnorms = X1.colwise().squaredNorm();
+        VectorXd X2_sqnorms = X2.colwise().squaredNorm();
 
-        return ;
+        MatrixXd sqdist = X1_sqnorms.replicate(1, X2.cols()) + 
+                         X2_sqnorms.transpose().replicate(X1.cols(), 1) - 
+                         2.0 * X1.transpose() * X2;
+
+        // Apply RBF kernel
+        double length_scale_sq = theta[0] * theta[0];
+        double variance = theta[1] * theta[1];
+        return variance * (-0.5 / length_scale_sq * sqdist.array()).exp().matrix();
     }
+
+    VectorXd kernel_diag(int d, const VectorXd& theta){
+        // Creates a vector of length d filled with theta[1]^2 (variance)
+        return VectorXd::Constant(d, theta[1] * theta[1]);
+    }
+
+    MatrixXd jitter(int d, double value = 1e-6){
+        return MatrixXd::Identity(d, d) * value;
+    }
+
+    // verify accuracy
+    MatrixXd softplus(const MatrixXd& X){
+       return (MatrixXd::Identity(X.rows(), X.cols()) + X.exp()).log();
+    }
+    
+    MatrixXd softplus_inv(const MatrixXd& X){
+       return (X.exp() - MatrixXd::Identity(X.rows(), X.cols())).log();
+    }
+    
+    VectorXd pack_params(const VectorXd& theta, const MatrixXd& X_m) {
+        VectorXd theta_transformed = softplus_inv(theta);
+        VectorXd X_m_flat = Map<const VectorXd>(X_m.data(), X_m.size());
+        
+        VectorXd packed(theta_transformed.size() + X_m_flat.size());
+        packed << theta_transformed, X_m_flat;
+        
+        return packed;
+    }
+    
     void minimize(){
         // implement LBGFS
         return;
