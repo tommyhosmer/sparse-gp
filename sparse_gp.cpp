@@ -13,8 +13,12 @@ using namespace Eigen;
 
 
 class SparseGP1D {
+    int n;
+    int m;
+    double sigma_y;
+
 public:
-    SparseGP1D() {}
+    SparseGP1D(int n, int m, double sigma_y) : n(n), m(m), sigma_y(sigma_y) {}
     ~SparseGP1D() {}
 
     VectorXd func(const VectorXd& x) {
@@ -24,10 +28,10 @@ public:
                0.5 * (x.array() * 7 * M_PI).sin();
     }
 
-    std::vector<MatrixXd> generate_data(int n, int m, float sigma_y) {
+    std::vector<MatrixXd> generate_data() {
         // Generate training data
         std::vector<MatrixXd> ans;
-
+        
         // Generate training data
         VectorXd X_train_vec = VectorXd::LinSpaced(n, -1, 1);
         VectorXd Y_train_vec = func(X_train_vec) + sigma_y * (VectorXd::Random(n) * 0.5);
@@ -115,8 +119,9 @@ public:
         return std::make_pair(theta, X_m);
     }
 
-    double nlb_fn(MatrixXd& X, VectorXd& y, float sigma_y){
-        int n = X.size();
+    // Not done
+    double nlb_fn(MatrixXd& X, VectorXd& y){
+        nlb_rg
         return 0.0;
     }
     
@@ -127,12 +132,12 @@ public:
     }
 
 private:
-    double nlb(const VectorXd& packed, const MatrixXd& X) {
+    double nlb(const VectorXd& packed, const MatrixXd& X, const VectorXd& y) {
         /*
         Negative lower bound on log marginal likelihood
         packed: kernel parameters theta and inducing inputs X_m
         */
-        int n = X.size();
+        
         // unpack the params
         std::pair<VectorXd, MatrixXd> params;
         params = unpack_params(packed);
@@ -149,15 +154,40 @@ private:
         // assert(L.rows() == X_m.rows() && L.cols() == X_m.cols() && "L and X must be same shape");
         // MatrixXd A = L.triangularView<Lower>().solve(K_mn) / sigma_y;  // m x n
         // Cholesky decomposition
-        LLT<MatrixXd> chol(K_mm);
-        if (chol.info() != Success) {
+        LLT<MatrixXd> chol_mm(K_mm);
+        if (chol_mm.info() != Success) {
             return std::numeric_limits<double>::infinity();
         }
         
+        MatrixXd L_mm = chol_mm.matrixL();        // Lower triangular L
+        
+        
         // Use the solver directly instead of triangularView
-        MatrixXd A = chol.solve(K_mn) / sigma_y;  // m x n
-        //Left off here, need unit tests
-        return 0.;
+        MatrixXd A = K_mm.colPivHouseholderQr().solve(K_mn) / sigma_y;  // m x n
+        MatrixXd AAT = A * (A.transpose());          // m x m
+        MatrixXd B = MatrixXd::Identity(AAT.rows(), AAT.cols()) + AAT; // m x m
+        // Cholesky of B
+        LLT<MatrixXd> chol_B(B);
+        if (chol_B.info() != Success) {
+            return std::numeric_limits<double>::infinity();
+        } 
+        
+        // lower triangular of B
+        MatrixXd L_B = chol_B.matrixL();        
+        
+        // 1/sigm_y * ( L_B \ (A*y) )
+        VectorXd c = L_B.colPivHouseholderQr().solve(A * y) / sigma_y;
+
+        // solving for lower bound lb
+        double lb = - n/2.0 * log(2*M_PI); 
+        lb -= L_B.diagonal().array().log().sum(); // log|B|
+        lb -= n / 2.0 * log(sigma_y*sigma_y);
+        lb -= 0.5 / (sigma_y*sigma_y) * (y.dot(y));
+        lb += 0.5 * c.dot(c);
+        lb -= 0.5 / (sigma_y*sigma_y) * kernel_diag(n, theta).sum();
+        lb += 0.5 * AAT.trace();
+        return lb;
+
     }
 
     // write a unit test
@@ -192,9 +222,9 @@ int main(){
     // Number of inducing variables
     int m = 30; 
     // Noise
-    float sigma_y = 0.2;
-    SparseGP1D gp;
-    std::vector< MatrixXd > ans = gp.generate_data(n, m, sigma_y);
+    double sigma_y = 0.2;
+    SparseGP1D gp(n,m,sigma_y);
+    std::vector< MatrixXd > ans = gp.generate_data();
 
     Tools tool;
     // Visualize training data against the true function
